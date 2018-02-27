@@ -38,9 +38,13 @@ int PrevTakt;
 int MuteFlag=0;
 
 // -------------------------------------------------------------------------
+// ring buffer for КР580ВИ53 (i8253) cnannel 0 (sound) samples per Takt
+// consider it private, use _OUT functions for access
 byte TIMERBUF[MAXBUF*2];
-int  BytePtr=0;
+int TbufHead=0;
+int TbufTail=0;
 
+// buffer for Allegro play_audio_stream
 byte SOUNDBUF[MAXBUF*2];
 
 // -------------------------------------------------------------------------
@@ -67,12 +71,67 @@ struct _TIMER i8253[4];
 
 // OUT_ routines
 
-static inline void ADD_OUT(int CH,int Value) {
-  if (!MuteFlag) {
-    TIMERBUF[BytePtr]=Value&SoundEnable;
-  }
-  if (BytePtr < MAXBUF) BytePtr++;
+// add to ring buffer
+static inline void ADD_OUT(int CH, int Value)
+{
+    //  Канал 0 используется для формирования звуковых колебаний программируемого тона.
+    if (CH == 0 && !MuteFlag) {
+        TIMERBUF[TbufHead] = Value&SoundEnable;
+        TbufHead++;
+        if (TbufHead >= MAXBUF)
+            TbufHead = -MAXBUF+1;
+        if (TbufTail == TbufHead)
+            TbufTail++;
+        if (TbufTail >= MAXBUF)
+            TbufTail = -MAXBUF+1;
+    }
 }
+
+// consume from FIFO ring buffer, return true on success
+static inline bool SHIFT_OUT(int CH, int *Value)
+{
+    if (CH == 0) {
+        if (TbufHead == TbufTail)
+            return false;
+        *Value = TIMERBUF[TbufTail];
+        TbufTail++;
+        if (TbufTail >= MAXBUF)
+            TbufTail = -MAXBUF+1;
+        return true;
+    }
+    return false;
+}
+
+// flush TIMERBUF
+static inline void DRAIN_OUT(int CH)
+{
+    if (CH == 0) {
+        TbufHead = TbufTail = 0;
+    }
+}
+
+// number of elements in TIMERBUF
+static inline int LENGTH_OUT(int CH)
+{
+    return
+        (TbufHead > TbufTail) ?
+        TbufHead-TbufTail : MAXBUF*2-(TbufTail-TbufHead);
+}
+
+// get Nth element (0..MAXBUF*2) of TIMERBUF FIFO, true on success
+static inline bool GET_OUT(int CH, int N, int *Value)
+{
+    if (TbufHead == TbufTail)
+        return false;
+    if (N >= LENGTH_OUT(CH) || N < 0)
+        return false;
+    int ndx = TbufTail + N;
+    if (ndx >= MAXBUF)
+        ndx -= 2 * MAXBUF;
+    *Value = TIMERBUF[ndx];
+    return true;
+}
+
 
 // MODE 0: INTERRUPT ON TERMINAL COUNT ----------------------------------------
 
@@ -101,21 +160,20 @@ void mode0_do(int Counter,int Takt) {
    if (i8253[Counter].NextTickLoad) {
       i8253[Counter].CountingElement=i8253[Counter].CountRegister;
       i8253[Counter].NextTickLoad=0;
+      ADD_OUT(Counter,i8253[Counter].OUT);
       Takt--;
    }
 
    while (Takt--) {
      if (i8253[Counter].StartFlag) {
         if ( i8253[Counter].CountingElement-- ) {
-            ADD_OUT(Counter,i8253[Counter].OUT);
             i8253[Counter].OUT=0;
         } else {
             i8253[Counter].StartFlag=0;
             i8253[Counter].OUT=1;
         };
-     } else {
-            ADD_OUT(Counter,i8253[Counter].OUT); //???? may be 1 ???
      }
+     ADD_OUT(Counter,i8253[Counter].OUT);
    }
 }
 
@@ -150,17 +208,21 @@ void mode2_do(int Counter,int Takt) {
    if (i8253[Counter].NextTickLoad) {
       i8253[Counter].CountingElement=i8253[Counter].CountRegister;
       i8253[Counter].NextTickLoad=0;
+      /* required as in mode0?
+      ADD_OUT(Counter,i8253[Counter].OUT);
+      Takt--;*/
    }
 
    while (Takt--) {
      if (i8253[Counter].StartFlag) {
        if (1 == i8253[Counter].CountingElement-- ) {
-         ADD_OUT(Counter,0);
          i8253[Counter].CountingElement=i8253[Counter].CountRegister;
+         i8253[Counter].OUT = 0;
+       } else {
+         i8253[Counter].OUT = 1;
        }
-     } else {
-       ADD_OUT(Counter,1);
      }
+     ADD_OUT(Counter,i8253[Counter].OUT);
    }
 }
 
@@ -182,6 +244,9 @@ void mode3_do(int Counter,int Takt) {
    if (i8253[Counter].NextTickLoad) {
       i8253[Counter].CountingElement=i8253[Counter].CountRegister&0xfffe;
       i8253[Counter].NextTickLoad=0;
+      /*required as in mode0?
+      ADD_OUT(Counter,i8253[Counter].OUT);
+      Takt--;*/
    }
 
    while (Takt--) {
@@ -210,10 +275,10 @@ void mode3_do(int Counter,int Takt) {
            i8253[Counter].OUT ^= 1;
          }
        }
-       ADD_OUT(Counter,i8253[Counter].OUT);
      } else {
-       ADD_OUT(Counter,1);
+       i8253[Counter].OUT = 1;
      }
+     ADD_OUT(Counter,i8253[Counter].OUT);
    }
 }
 
@@ -235,16 +300,20 @@ void mode4_do(int Counter,int Takt) {
    if (i8253[Counter].NextTickLoad) {
       i8253[Counter].CountingElement=i8253[Counter].CountRegister;
       i8253[Counter].NextTickLoad=0;
+      /* required as in mode0?
+      ADD_OUT(Counter,i8253[Counter].OUT);
+      Takt--;*/
    }
 
    while (Takt--) {
      if (i8253[Counter].StartFlag) {
        if (0 == i8253[Counter].CountingElement-- ) {
-         ADD_OUT(Counter,0);
+           i8253[Counter].OUT = 0;
        }
      } else {
-       ADD_OUT(Counter,1);
+           i8253[Counter].OUT = 1;
      }
+     ADD_OUT(Counter,i8253[Counter].OUT);
    }
 }
 
@@ -365,8 +434,13 @@ void InitTMR(void)                      // Инициализация при с�
   Init_TimerCntr(0);
   Init_TimerCntr(1);
   Init_TimerCntr(2);
-  BytePtr=0;
+  //BytePtr=0;
   PrevTakt=0;
+
+  bzero (TIMERBUF-MAXBUF, MAXBUF*2);
+  bzero (SOUNDBUF-MAXBUF, MAXBUF*2);
+  TbufHead=0;
+  TbufTail=0;
 }
 
 int DoTimer(void){
@@ -400,36 +474,46 @@ void Timer_Write(int Addr, byte Value)
   }
 }
 
-static void adjust_timer_buffer(uint8_t *buf, size_t len,
-                                size_t val, int *ptr)
+
+#define MAX_ERROR_SAMPLES   8
+#define DAMPING_LEVEL       3
+
+void MakeSound()
 {
-    memmove(buf, buf + val, len - val);
-    *ptr -= val;
-}
+    int nticks, tickval, sample, tick, error;
+    int SampleIntegralAmplitude, TicksPerSample, SampleMaxAmplitude;
+    int TickWindowBegin, TickWindowEnd;
 
-void MakeSound(void) {
-
-  int  TempValue=0;
-  int  i,j;
-  int  ByteInByte=40000/AUDIO_BUFFER_SIZE;
-  int  outptr=0;
-  int  d7=0;
-
-  if (MuteFlag) {
-    for (i=0;i<AUDIO_BUFFER_SIZE;i++) SOUNDBUF[i]=0;
-  } else {
-    for (i=0;i<AUDIO_BUFFER_SIZE;i++) {
-      for (j=0;j<ByteInByte;j++) if (TIMERBUF[outptr++]) TempValue++;
-
-      d7+=7028;if (d7 >=10000) {if (TIMERBUF[outptr++]) TempValue++;d7-=10000;}
-
-      SOUNDBUF[i]=(TempValue>ByteInByte/2)?255:0;
-      TempValue=0;
+    nticks = LENGTH_OUT(0);
+    if (MuteFlag || nticks == 0) {
+        bzero(SOUNDBUF, AUDIO_BUFFER_SIZE);
+        return;
     }
-  }
-  adjust_timer_buffer(TIMERBUF, ARRAY_SIZE(TIMERBUF),
-                      outptr - 1, &BytePtr);
+    TicksPerSample = nticks / AUDIO_BUFFER_SIZE;
+    SampleMaxAmplitude = TicksPerSample;
+    error = (40000 - nticks) / (40000 / AUDIO_BUFFER_SIZE);
+    if (error > MAX_ERROR_SAMPLES)
+        fprintf (stderr, 
+            "%d audio samples over/underrun, distortion possible. Please report.\n", error);
+    for (sample = 0; sample < AUDIO_BUFFER_SIZE; sample++) {
+        SampleIntegralAmplitude = 0;
+        TickWindowBegin = sample * nticks / AUDIO_BUFFER_SIZE;
+        TickWindowEnd = (sample+1) * nticks / AUDIO_BUFFER_SIZE;
+        for (tick = TickWindowBegin; tick < TickWindowEnd; tick++) {
+            if (GET_OUT(0, tick, &tickval) && tickval)
+                SampleIntegralAmplitude++;
+        }
+        // try to make smooth wave instead of original 0/1 trigger implementation
+        SOUNDBUF[sample] = SampleIntegralAmplitude * 128 / SampleMaxAmplitude;
+        // avoid uneven sampling artifacts
+        if (SOUNDBUF[sample] >= (128 - DAMPING_LEVEL))
+            SOUNDBUF[sample] = 128;
+        else if (SOUNDBUF[sample] <= DAMPING_LEVEL)
+            SOUNDBUF[sample] = 0;
+    }
+    DRAIN_OUT(0);
 }
+
 
 void Timer50HzTick(void)
 {
