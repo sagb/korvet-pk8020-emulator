@@ -28,7 +28,7 @@
 int   ext_rom_mode=0;
 FILE* extrom_file;
 char  ext_rom_file_name[1024]="not set";    // имя файла с образом ROM
-int   ext_rom_addr_changed=0;               // =1 while EXT ROM BOOT (rom loader only write in PPI3B,PPI3C)
+static int   ext_rom_addr_changed=0;               // =1 while EXT ROM BOOT (rom loader only write in PPI3B,PPI3C)
 char  ext_rom_emu_folder[1024]="";          // папка которая прикидывается SDCARD эмулятора
 char  drive_filename[5][EMU_FNAME_SIZE+2];                // имена файлов для монтирования образа
 char  drive_foldername[5][EMU_FNAME_SIZE+2];              // имена каталогов, хранящих файлы

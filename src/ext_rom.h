@@ -44,7 +44,7 @@ extern FILE* extrom_file;
 extern char ext_rom_file_name[];	// имя файла с образом ROM
 extern char ext_rom_emu_folder[];  	// папка которая прикидывается SDCARD эмулятора
 
-int   ext_rom_addr_changed; 		// =1 while EXT ROM BOOT (rom loader only write in PPI3B,PPI3C)
+static int   ext_rom_addr_changed; 		// =1 while EXT ROM BOOT (rom loader only write in PPI3B,PPI3C)
 
 void init_extrom(void);
 byte ext_rom_read(unsigned char PPI3_B, unsigned char PPI3_C);
